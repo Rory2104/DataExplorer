@@ -1,0 +1,614 @@
+install.packages("statsr")
+require("statsr")
+##############################################################################
+# Define the model and generate data
+# Auxiliary Variable
+## Reference - 1.11.2 page 69
+# y[k] - This relates to the Milstein Discretization (CIR Time Change)
+# y[k] <- y[k -1] + kappa*(eta - y[k -1])*dt + lambda*sqrt(y[k -1])*sqrt(dt)*Zk
+# Zk - Normal Random Variable 
+# v[t] ~ N(0, 1)
+
+# State
+## Reference - page 220
+# Refers to the State
+# x[k] <- invgamma(y[k]*dt, U[0,1])
+
+# Observation
+## Reference - 1.11.2 page 69
+# z[k] - Relates to the Return of the Stock
+# z[k] <- z[k - 1] + (mu + omega)*dt + theta*T_Star + sigma*sqrt(T_Star)*Bk
+# z[k] <- log(z[k]/z[k - 1])
+# Bk - Normal Random Variable
+# e[t] ~ N(0, 1)
+
+## Reference - page 220
+# omega <- (1/nu)*log(1 - theta*nu - sigma**2*nu/2)
+# xh <- z - mu*h - (h/nu)*log(1 - theta*nu - sigma**2*nu/2) - Where 'mu' is taken to equal (r - q)
+# h <- t[k] - t[k - 1]
+################## Derivation of the Martingale Correction - Characteristic Function ####################
+Variance_Gamma_CF <- function(theta, sigma, nu) { # Verified 
+  set.seed(123)
+  
+  # Basic Error Handling
+  if(sigma < 0) {
+    return(paste("Invalid Arguments"))
+  } else {
+    if((1 - theta*nu - sigma**2*nu/2) < 0) {
+      return(paste("Invalid Arguments for Log Function"))
+    }
+  }
+  # Note omega = Characteristic_Function
+  Omega <- (1/nu)*log(1 - theta*nu - (sigma**2*nu)/2) 
+  Characteristic_Function <- Omega
+  
+  return(Characteristic_Function)
+}
+##################### Generation of Stock Price Deviates ##################
+VGSA_Deviates <- function(S0, N, time, r, q = 0, sigma, nu, theta, kappa, lambda, eta){
+  set.seed(123)
+  h <- time/N
+  y <- rep(1, N)
+  tj <- rep(1, N)
+  Gamma_Deviates <- rep(1, N)
+  CIR_Deviates_delta_z <- rep(1, N)
+  
+  omega <- Variance_Gamma_CF(theta, sigma, nu) # VG Charcteristic Function
+  z <- rnorm(N)
+  
+  St <- rep(NA, N)
+  St[1] <- S0
+  
+  for(i in 2:N){
+    y[i] <- y[i - 1] + kappa*(eta - y[i - 1])*h + lambda*sqrt(y[i - 1]*h)*z[i] + (lambda**2/4)*h*(z[i]**2 - 1)
+    tj[i] <- (h*(y[i] + y[i - 1]))/2
+    Gamma_Deviates[i - 1] <- rgamma(1, tj[i - 1]/nu, nu)
+    CIR_Deviates_delta_z[i] <- theta*Gamma_Deviates[i - 1] + sigma*sqrt(Gamma_Deviates[i - 1])*z[i - 1]
+    St[i] <- St[i - 1] + (r - q)*h + omega + CIR_Deviates_delta_z[i - 1]
+  }
+  Log_Price <- log(St)
+  
+  # Calculate Returns
+  len <- length(Log_Price)
+  Return <- St[-1]/St[-len] - 1
+  Log_Ret <- diff(Log_Price)
+  time <- c(1:len-1)[-1]
+  
+  Return_Data <- cbind(time, Return, Log_Ret)
+  summary_stats <- describe(Log_Ret)
+  
+  return(list("y" = y, "Log Price" = Log_Price, "Return" = Return, "Log Return" = Log_Ret, "Log Return Stats" = summary_stats, raw, smooth))
+}
+Stock_Prices <- VGSA_Deviates(S0, Nsim, r, q = 0, sigma, nu, theta, kappa, lambda, eta)$`Log Price`
+
+# Graphics
+par(mfrow = c(2,1))
+plot(Log_Price, type = "l")
+plot(Return_Data[,1], 100*Return_Data[,2], type = "l", xlab = "time", ylab = "Percentage", col = 1)
+points(Return_Data[,1], 100*Return_Data[,3], col = 2, cex = 0.1)
+legend(16600, -4.5, legend = c("Return", "Log-Return"), lty = 1, col = c(1:2))
+
+par(mfrow = c(2,1))
+raw <- spectrum(Return_Data[,3])
+smooth <- spectrum(Return_Data[,3], spans = c(25, 5, 25), main = "Smoothed Periodgram")
+
+
+
+# Define VGSA Auxiliary Variable, State and Observations
+VGSA_Simulation <- function(Nsim, mu, theta, sigma, nu, kappa, lambda, eta){
+  # =========== Discretize CIR Time Change =========== #
+  set.seed(123)
+  # Reference: Page 28
+  y <- rep(1, Nsim)
+  h <- T/Nsim # page 27
+  W_Normal_Deviates <- rnorm(Nsim)
+  
+  for(i in 1:Nsim){
+    # Page 28
+    y[i + 1] <- y[i] + kappa*(eta - y[i])*h + lambda*sqrt(y[i]*h)*W_Normal_Deviates[i] + (lambda**2/4)*h*(W_Normal_Deviates[i]**2 - 1)
+  }
+  y <- y[-1]
+  
+  # =========== CIR Time Change Variance Gamma =========== #
+  # Reference: Page 28
+  #tj <- rep(0, Nsim)
+  #Gee <- rep(0, Nsim) 
+  #Zee <- rnorm(Nsim)
+  
+  #for(i in 1:Nsim){
+  #  tj[i + 1] <- h*(y[i + 1] - y[i])/2
+  #  Gee[i] <- dgamma(tj[i]/nu, nu)
+  #}
+  #Time_Change <- theta*Gee + sigma*sqrt(Gee)*Zee
+  
+  # =========== Computation of Observations =========== #
+  omega <- Variance_Gamma_CF(theta, sigma, nu)
+  # z <- VGSA_Deviates(S0, N, time, r, q = 0, sigma, nu, theta, kappa, lambda, eta)$`Log Price` Potentially Redundant
+  
+  # =========== Computation of the State - CIR Time Change Variance Gamma =========== #
+  ## Refefence 1.11.2
+  # One Step Simulations and definition of the State
+  Yt_Star <- y*h
+  uniform_deviates <- runif(Nsim)
+  xk <- rgamma(Yt_Star, uniform_deviates)
+  
+  # =========== Computation of the Stock Price =========== #
+  ## Reference: 1.11.2
+  B_Normal_Deviates <- rnorm(Nsim)
+  Stock_Price <- rep(1, Nsim)
+  Stock_Price[1] <- 100
+  
+  for(j in 2:Nsim){
+    Stock_Price[j] <- Stock_Price[1] + (mu + omega)*h + theta*xk[j - 1] + sigma*sqrt(xk[j - 1])*B_Normal_Deviates[j - 1]
+  }
+  
+  Stock_Returns <- rep(0, Nsim)
+  for(k in 2:Nsim){
+    Stock_Returns[k] <- log(Stock_Price[k]/Stock_Price[1])
+  }
+  z <- Stock_Returns
+  
+  return(z)
+}
+observations <- VGSA_Simulation(100, 0.1, -0.14, 0.3, 0.2, 0.01, 0.01, 0.3)
+par(mfrow = c(1,1))
+plot(observations, type = "l")
+##################### Extended Kalman Filter ##############################
+Resampling_Extended_Kalman_Filter <- function(S0, Nsim, mu, sigma, nu, theta, kappa, lambda, eta){
+  set.seed(123)
+  time <- 1
+  r <- mu
+  Stock_Prices <- VGSA_Simulation(Nsim, 0.1, -0.14, 0.3, 0.2, 0.01, 0.01, 0.3) # Observations
+  Nprice <- length(Stock_Prices)
+  weights <- rep(1/Nprice, Nprice)
+  Nsim <- Nsim
+  
+  # Empty Vectors to Store Results
+  z <- rep(0, Nprice)
+  xh <- rep(0, Nprice)
+  x1_sum <- rep(0, Nprice)
+  estimates <- rep(0, Nprice)
+  errors <- rep(0, Nprice)
+  parameter <- rep(0, Nprice)
+  wprev <- rep(0, Nprice)
+  sumweights <- rep(0, Nprice)
+  #weights2 <- rep(0, Nprice)
+  logl <- rep(0, Nprice)
+  logl[1] <- 0
+  
+  x <- rep(0, Nsim) # This needs to be for the Particles
+  xhat <- rep(0, Nsim)
+  W_Jacobian <- rep(0, Nsim)
+  Pkk <- rep(0, Nsim) # Posterior Error
+  Pkk1 <- rep(0, Nsim) # Prior Error
+  U <- rep(0, Nsim) # Gradient of h w.r.t Measurement Noise 
+  Kk <- rep(0, Nsim) # Kalman Gain
+  xk <- rep(0, Nsim)
+  xsim <- rep(0, Nsim)
+  px <- pz <- rep(0, Nsim)
+  pz <- rep(0, Nsim)
+  
+  m <- rep(0, Nsim)
+  s <- rep(0, Nsim)
+  m1 <- rep(0, Nsim)
+  s1 <- rep(0, Nsim)
+  q <- rep(0, Nsim)
+  
+  A_Density <- rep(0, Nsim)
+  B_Density <- rep(0, Nsim)
+  C_Density <- rep(0, Nsim)
+  D_Density <- rep(0, Nsim)
+  pz <- rep(0, Nsim)
+  
+  h <- rep(0, Nsim)
+  Knu <- rep(0, Nsim)
+  x1_sum <- 0
+  
+  reset <- rep(0, Nsim)
+  resamp <- rep(0, Nsim)
+  
+  # Initialisation
+  omega <- Variance_Gamma_CF(theta, sigma, nu) # VG Charcteristic Function
+  weights <- rep(1/Nsim, Nsim)
+  P0 <- 0.000001
+  x[1] <- 1
+  x <- x[1] + sqrt(P0)*rnorm(Nsim)
+  dt <- time/Nsim
+  eps <- 1*exp(-10)
+  estimates[1] <- Stock_Prices[1]
+  
+  # Determine the Jacobians
+  A <- (1 - kappa)*dt # Jacobian w.r.t system process
+  H <- theta*dt # Gradient of h w.r.t measurement noise 
+  # U <- sqrt(theta**2*nu + sigma**2)
+  
+  for(k in 1:Nprice-1){
+    z[k] <- Stock_Prices[k + 1] - Stock_Prices[k]
+    xh[k] <- z[k] - mu*dt - (dt/nu)*log(1 - theta*nu - (sigma**2*nu/2)) # Required for Modified Bessel Function
+    x1_sum[k] <- 0
+    
+    for(i in 2:Nsim){
+      # Simulate the State via the Extended Kalman Filter
+      # Time Update 
+      # Define xhat(i)
+      xhat[i] <- max(eps, x[i] + kappa*(eta - x[i])*dt) # Prior Transition Update - Prior Estimate xhat(k|k-1)
+      
+      # Determine the remaining Jacobian
+      W_Jacobian[i] <- lambda*sqrt(x[i]*dt) # System Noise Jacobian 
+      
+      # Prior Estimate
+      Pkk1[i] <- A*Pkk[i]*A + W_Jacobian[i]**2 # Prior State Estimate 
+      U[i] <- sqrt(theta**2*nu + sigma**2)*sqrt(xhat[i]*dt) # Gradient of h w.r.t Measurement Noise
+      
+      # Optimal Gain
+      Kk[i] <- Pkk1[i]*H/(H*Pkk1[i]*H + U[i]*U[i])
+      
+      # Measurement Update
+      xk[i] <- xhat[i] + Kk[i]*(z[i] - (z[i - 1] + mu + omega + theta*xhat[i])*dt) # Posterior estimate xhat(k)
+      Pkk[i] <- (1 - Kk[i]*H)*Pkk1[i] # Posterior Error Covariance Matrix
+      x1_sum[i] <- x1_sum[i - 1] + xhat[i]
+      
+      # Simulate the State
+      xsim[i] <- max(xk[i] + sqrt(Pkk[i])*rnorm(Nsim), eps)
+      
+      # Calculate the Weights
+      m[i] <- xk[i]  
+      s[i] <- sqrt(Pkk[i])
+      
+      # Normal Density with mean m and stdev s
+      q[i] <- 1/(s[i]*sqrt(2*pi))*exp(-0.5*(xsim[i] - m[i])**2/(s[i]**2))
+      
+      m1[i] <- x[i - 1] + kappa*(eta - x[i - 1])*dt
+      s1[i] <- lambda*sqrt(x[i - 1]*dt)
+      
+      # Normal Density
+      px[i] <- 1/(s1[i]*sqrt(2*pi))*exp(-0.5*(xsim[i] - m1[i])**2/(s1[i]**2))
+      h[i] <- dt*xsim[i]
+      
+      # Bessel Function Arguments
+      Kx <- max(eps, 1/(sigma**2)*sqrt(xh[i]**2*(2*sigma**2/nu + theta**2)))
+      Kx <- rep(Kx, Nsim)
+      Knu[i] <- max(eps, ((h[i]/nu) - 0.5))
+      
+      # VGSA Integrated Density Function
+      A_Density[i] <- 2*exp(theta*xh[i]/(sigma**2))
+      B_Density[i] <- (nu**(h[i]/nu)*sqrt(2*pi)*sigma*lgamma(h[i]/nu))
+      C_Density[i] <- (xh[i - 1]**2/(2*sigma**2/nu + theta**2))**((0.5*h[i]/nu) - 0.25)
+      D_Density[i] <- besselK(Kx[i], Knu[i])
+      
+      pz[i] <- (A_Density[i]/B_Density[i])*C_Density[i]*D_Density[i]
+      
+      # Weights
+      weights[i] <- weights[i - 1]*((pz[i]*px[i])/max(eps, q))
+    }
+    
+    sumweights[k] <- sum(weights[k]) # this was weights[k]
+    logl[k] <- logl[k] + log(sumweights[k])
+    
+    # Estimates [i1 + 1] for z[i] - Error Term
+    parameter[k] <- (mu + omega + theta*x1_sum[k]/Nprice)*dt
+    estimates[k] <- Stock_Prices[k + 1] - Stock_Prices[k] + parameter[k]
+    errors[k] <- (theta*theta*nu + sigma*sigma)*(x1_sum[k]/Nprice)*dt
+    
+    weights[k] <- weights[k]/sumweights[k] # Normalisation Step
+    wprev[k] <- weights[k]
+    
+    # Resample and Reset Weights 
+    reset[1] <- 0
+    for(i in 2:Nsim){
+      reset[i] <- reset[i - 1] + weights[i]
+    }
+    i <- 1
+    for(j in 1:Nsim){
+      normal_data <- Nsim[j] + j - 1
+      resamp[j] <- (1/Nsim[j])*(normal_data)
+      while (resamp[j] > reset[i] && i < length(reset[i])) {
+        i <- i + 1
+      }
+      xsim[j] <- x[i]
+      weights[j] <- 1/Nsim[i]
+    }
+  }
+  logl <- -logl
+  return(list("Observations" = Stock_Prices, "Estimates" = estimates, "Error" = errors, "Weights" = weights, "Loglikelihood" = logl, "Est State" = xsim))
+}
+Kalman_Data_100 <- Resampling_Extended_Kalman_Filter(100, 100, 0.1, 0.3, 0.2, -0.14, 0.01, 0.01, 0.3)
+Kalman_Data_250 <- Resampling_Extended_Kalman_Filter(100, 250, 0.1, 0.3, 0.2, -0.14, 0.01, 0.01, 0.3)
+Kalman_Data_500 <- Resampling_Extended_Kalman_Filter(100, 500, 0.1, 0.3, 0.2, -0.14, 0.01, 0.01, 0.3)
+
+par(mfrow = c(3,1))
+# Plot for Nsim = 100
+quantile_100 <- CI(Kalman_Data_100$Estimates)
+upper_100 <- Kalman_Data_100$Estimates + quantile[1]
+lower_100 <- Kalman_Data_100$Estimates - quantile[3]
+
+plot(Kalman_Data_100$Estimates*100, type = "p", lty = 5, col = "red", cex = 0.5)
+lines(Kalman_Data_100$Observations*100, type = "l", lty = 6, col = "blue")
+lines(upper_100*100, type = "l", lty = 2, col = "light blue")
+lines(lower_100*100, type = "l", lty = 2, col = "light blue")
+
+# Plot for Nsim = 250
+quantile_250 <- CI(Kalman_Data_250$Estimates)
+upper_250 <- Kalman_Data_250$Estimates + quantile[1]
+lower_250 <- Kalman_Data_250$Estimates - quantile[3]
+
+plot(Kalman_Data_250$Estimates*100, type = "p", lty = 5, col = "red", cex = 0.5)
+lines(Kalman_Data_250$Observations*100, type = "l", lty = 6, col = "blue")
+lines(upper_250*100, type = "l", lty = 2, col = "light blue")
+lines(lower_250*100, type = "l", lty = 2, col = "light blue")
+
+# Plot for Nsim = 500
+quantile_500 <- CI(Kalman_Data_500$Estimates)
+upper_500 <- Kalman_Data_500$Estimates + quantile[1]
+lower_500 <- Kalman_Data_500$Estimates - quantile[3]
+
+plot(Kalman_Data_500$Estimates*100, type = "p", lty = 5, col = "red", cex = 0.5)
+lines(Kalman_Data_500$Observations*100, type = "l", lty = 6, col = "blue")
+lines(upper_500*100, type = "l", lty = 2, col = "light blue")
+lines(lower_500*100, type = "l", lty = 2, col = "light blue")
+
+
+###################### Bootstrap Particle Filter #####################
+# Inputs
+# y - vector with T + 1 observations
+# Parameters - Parameters required for the Simulation
+# noParticles - 
+# initialState -
+
+# Outputs
+# Estimates of the Filtered States
+# Likelihood
+
+# Other Comments
+# particleFilter iterates over t = 2,...,T, which corresponds to time indices t = 1,...,T − 1
+# The iteration terminates at time index T − 1 as future observations yt+1 are required at each iteration.
+
+# Assumptions
+# Assume that the new observation arrives to the algorithm between the propagation and weighting steps
+# InitialState is defaulted to 0 or as defined by the user
+# Initial Weights = 1/N as each particle is considered as equally likely 
+# =========== Bootstrap Particle Filter Algorithm 
+y <- observations   
+noParticles <- 100
+Nsim <- 100
+initialState <- 0
+mu <- 0.1
+theta <- -0.14
+sigma = 0.3
+nu <- 0.2
+lambda <- 0.01
+kappa <- 0.01
+eta <- 0.3
+
+particleFilter <- function(y = observations, noParticles, Nsim, initialState, mu, theta, sigma, nu, lambda, kappa, eta) {
+  set.seed(123)
+  # Initialisation
+  T <- length(y) - 1
+  particles <- matrix(0, nrow = noParticles, ncol = T + 1)
+  ancestorIndices <- matrix(0, nrow = noParticles, ncol = T + 1)
+  weights <- matrix(1, nrow = noParticles, ncol = T + 1)
+  normalisedWeights <- matrix(0, nrow = noParticles, ncol = T + 1)
+  omega <- Variance_Gamma_CF(theta, sigma, nu)
+  
+  # This is to store the mean of each recursion 
+  xHatFiltered <- matrix(0, nrow = T, ncol = 1)
+  logLikelihood <- 0
+  
+  dt <- 1/T
+  eps <- 1*exp(-10)
+  
+  xh <- rep(0, length(y))
+  x <- as.data.frame(rep(0, Nsim))
+  xhat <- as.data.frame(rep(0, Nsim))
+  xk <- rep(0, Nsim)
+  xsim <- rep(0, Nsim)
+  m <- rep(0, Nsim)
+  s <- rep(0, Nsim)
+  m1 <- rep(0, Nsim)
+  s1 <- rep(0, Nsim)
+  px <- rep(0, Nsim)
+  h <- rep(0, Nsim)
+  A_Density <- rep(0, Nsim)
+  B_Density <- rep(0, Nsim)
+  C_Density <- rep(0, Nsim)
+  D_Density <- rep(0, Nsim)
+  Kx <- rep(0, Nsim)
+  Knu <- rep(0, Nsim)
+  Pkk <- rep(0, Nsim)
+  wprev <- rep(1, Nsim)
+  q <- rep(1, Nsim)
+  pz <- rep(1, Nsim)
+  
+  
+  # Initialise States
+  ancestorIndices[, 1] <- 1:noParticles
+  particles[ ,1] <- initialState # This may need corrected to log(S0)
+  xHatFiltered[ ,1] <- initialState
+  normalisedWeights[ ,1] = 1 / noParticles
+  
+  # Define xh
+  for(i in 1:length(y) - 1){
+    xh[i] <- y[i] - mu*dt - (dt/nu)*log(1 - theta*nu - sigma**2*nu/2)
+    
+    for(t in 2:Nsim) {
+      # Resampling
+      newAncestors <- rep_sample_n(noParticles, replace = TRUE, prob = normalisedWeights[,1])
+      ancestorIndices[, 1:(t - 1)] <- ancestorIndices[newAncestors, 1:(t - 1)]
+      ancestorIndices[, t] <- newAncestors
+      
+      # Time Update
+      newAncestors <- as.data.frame(newAncestors)
+      xhat[t, 1] <- max(eps, newAncestors[t,1] + kappa*(eta - newAncestors[t,1])*dt)
+      xk[t] <- xhat[t, 1] + (y[t] - (mu + omega + theta*xhat[t, 1])*dt)
+      xsim[t] <- max(eps, xk[t] + sqrt(Pkk[t])*rnorm(1))
+      particles[t,] <- xk[t]
+      
+      # Weight Particles
+      # Calculate the Mean and the Standard Deviation
+      m[t] <- xk[t]
+      s[t] <- 1
+      
+      # Normal Density with Mean m and Stdev s
+      q[t] <- 1/(s[t]*sqrt(2*pi))*exp(-0.5*(xsim[t] - m[t])**2)/(s[t]**2)
+      
+      # Recalculate m and s
+      m1[t] <- newAncestors[t,] + kappa*(eta - newAncestors[t,])*dt
+      s1[t] <- lambda*sqrt(newAncestors[t,]*dt)
+      
+      # Normal Density
+      px[t] <- 1/(s1[[t]]*sqrt(2*pi))*exp(-0.5*xsim[t] - m1[[t]])**2/(s1[[t]]**2)
+      h[t] <- dt*xsim[t]
+      
+      # Arguments for the BesselK Function 
+      Kx[t] <- max(eps, 1/(sigma**2)*sqrt(xh[t]**2*(2*sigma**2/nu + theta**2)))
+      Knu[t] <- max(eps, ((h[t]/nu) - 0.5))
+      
+      A_Density[t] <- 2*exp(theta*xh[t]/(sigma**2))
+      B_Density[t] <- (nu**(h[t]/nu)*sqrt(2*pi)*sigma*lgamma(h[t]/nu))
+      C_Density[t] <- (xh[t]**2/(2*sigma**2/nu + theta**2))**((0.5*h[t]/nu) - 0.25)
+      D_Density[t] <- besselK(Kx[t], Knu[t])
+      pz[t] <- (A_Density[t]/B_Density[t])*C_Density[t]*D_Density[t]
+      
+      weights[t,] <- (wprev[t]*pz[t]*px[t])/max(q[t], eps)
+      
+      # Normalise Weights
+      maxWeight <- max(weights[, t])
+      weights[, t] <- exp(weights[, t] - maxWeight)
+      sumWeights <- sum(weights[, t])
+      normalisedWeights[, t] <- weights[, t] / sumWeights
+      
+      # Effective Sample Size
+      #  ESS[t] <- 1/sum(normalisedWeights[,t]**2)
+      
+      # EstimateLikelihood
+      predictiveLikelihood <- maxWeight + log(sumWeights) - log(noParticles)
+      logLikelihood <- logLikelihood + predictiveLikelihood
+      
+      # Estimate State
+      xHatFiltered[t] <- mean(particles[, t])
+    }
+  }
+  return(list(xHatFiltered = xHatFiltered, logLikelihood = logLikelihood))
+}
+
+particleFilter(observations, 100, 200, 0, 0.1, -0.14, 0.3, 0.2, 0.01, 0.01, 0.3)
+
+par(mfrow = c(1,1))
+PF_Data <- ParticleFilter(100, 100, 100, 0, 0.1, 0.3, 0.2, -0.14, 0.01, 0.01, 0.3)
+Stock_Data <- ParticleFilter(100, 100, 100, 0.1, 0.3, 0.2, -0.14, 0.01, 0.01, 0.3)
+plot(Stock_Data$y)
+lines((PF_Data[-1]))
+
+
+
+########## PF Practice
+particleFilter <- function(y = observations, noParticles, Nsim, initialState, mu, theta, sigma, nu, lambda, kappa, eta) {
+  set.seed(123)
+  # Initialisation
+  T <- length(y) - 1
+  particles <- matrix(0, nrow = noParticles, ncol = T + 1)
+  ancestorIndices <- matrix(0, nrow = noParticles, ncol = T + 1)
+  weights <- matrix(1, nrow = noParticles, ncol = T + 1)
+  weights <- as.data.frame(weights)
+  normalisedWeights <- matrix(0, nrow = noParticles, ncol = T + 1)
+  omega <- Variance_Gamma_CF(theta, sigma, nu)
+  
+  # This is to store the mean of each recursion 
+  xHatFiltered <- matrix(0, nrow = T, ncol = 1)
+  logLikelihood <- 0
+  
+  dt <- 1/T
+  eps <- 1*exp(-10)
+  
+  xh <- rep(0, length(y))
+  xsim <- as.data.frame(rep(0, Nsim))
+  m <- rep(0, Nsim)
+  s <- rep(0, Nsim)
+  m1 <- as.data.frame(rep(0, Nsim))
+  s1 <- as.data.frame(rep(0, Nsim))
+  px <- as.data.frame(rep(0, Nsim))
+  h <- as.data.frame(rep(0, Nsim))
+  A_Density <- as.data.frame(rep(0, Nsim))
+  B_Density <- as.data.frame(rep(0, Nsim))
+  C_Density <- as.data.frame(rep(0, Nsim))
+  D_Density <- as.data.frame(rep(0, Nsim))
+  Kx <- as.data.frame(rep(0, Nsim))
+  Knu <- as.data.frame(rep(0, Nsim))
+  q <- as.data.frame(rep(1, Nsim))
+  pz <- rep(1, Nsim)
+  
+  # Initialise States
+  ancestorIndices[, 1] <- 1:noParticles
+  particles[ ,1] <- initialState # This may need corrected to log(S0)
+  xHatFiltered[ ,1] <- initialState
+  normalisedWeights[ ,1] = 1 / noParticles
+  
+  # Define xh
+  for(i in 1:length(y) - 1){
+    xh[i] <- y[i] - mu*dt - (dt/nu)*log(1 - theta*nu - sigma**2*nu/2)
+    
+    for(t in 2:Nsim) {
+      # Resampling
+      newAncestors <- rep_sample_n(noParticles, replace = TRUE,
+                                   prob = normalisedWeights[, t - 1])
+      ancestorIndices[, 1:(t - 1)] <- ancestorIndices[newAncestors, 1:(t - 1)]
+      ancestorIndices[, t] <- newAncestors
+      newAncestors <- as.data.frame(newAncestors)
+      # Time Update - Porpagate Particles
+      xsim <- rnorm(Nsim) # Perhaps make log-normal
+      particles[,t] <- xsim
+      
+      # Weight Particles
+      # Calculate the Mean and the Standard Deviation
+      m <- 0
+      s <- 1
+      
+      # Normal Density with Mean m and Stdev s
+      q <- 1/((s*sqrt(2*pi))*exp(-0.5*(xsim - m)**2)/(s**2))
+      
+      # Recalculate m and s
+      m1[,1] <- newAncestors[,1] + kappa*(eta - newAncestors[,1])*dt
+      s1[,1] <- lambda*sqrt(newAncestors[,1]*dt)
+      
+      # Normal Density
+      px[,1] <- 1/(s1[,1]*sqrt(2*pi))*exp(-0.5*xsim - m1[,1])**2/(s1[,1]**2)
+      h[,1] <- dt*xsim
+      
+      # Arguments for the BesselK Function 
+      Kx[,1] <- 1/(sigma**2)*sqrt(xh**2*(2*sigma**2/nu + theta**2))
+      if(Kx[last(Nsim), 1] == 0){
+        Kx[last(Nsim), 1] <- eps
+      }
+      Knu[,1] <- sqrt(((h/nu) - 0.5)**2) # Remove the negatives
+      
+      A_Density[,1] <- 2*exp(theta*xh/(sigma**2))
+      B_Density[,1] <- (nu**(h/nu)*sqrt(2*pi)*sigma*lgamma(h/nu))
+      C_Density[,1] <- (xh**2/(2*sigma**2/nu + theta**2))**((0.5*h/nu) - 0.25)
+      if(C_Density[last(Nsim), 1] == "Inf"){
+        C_Density[last(Nsim), 1] <- eps
+      }
+      for(j in 1:Nsim){
+        D_Density[j,1] <- besselK(Kx[j,1], Knu[j,1])
+      }
+      
+      pz <- (A_Density[,1]/B_Density[,1])*C_Density[,1]*D_Density[,1]
+      wprev <- weights[,t]
+      weights[,t] <- as.data.frame((wprev*pz*px)/max(q, eps))
+      
+      # Normalise Weights
+      maxWeight <- max(weights[, t])
+      weights[, t] <- exp(weights[, t] - maxWeight)
+      sumWeights <- sum(weights[, t])
+      normalisedWeights[, t] <- weights[, t]/sumWeights
+      
+      # EstimateLikelihood
+      predictiveLikelihood <- maxWeight + log(sumWeights) - log(noParticles)
+      logLikelihood <- logLikelihood + predictiveLikelihood
+      
+      # Estimate State
+      xHatFiltered[t] <- mean(particles[, t])
+    }
+  }
+  return(list(xHatFiltered = xHatFiltered, logLikelihood = logLikelihood))
+}
+particleFilter(y = observations, 100, 100, 0, 0.1, -0.14, 0.3, 02, 0.01, 0.01, 0.3)
